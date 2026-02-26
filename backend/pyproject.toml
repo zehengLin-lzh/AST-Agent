@@ -1,0 +1,19 @@
+[project]
+name = "ast-agent"
+version = "0.1.0"
+description = "AI-powered AST agent with resume parsing preprocessor"
+requires-python = ">=3.12"
+dependencies = [
+    "pymupdf",
+    "python-docx",
+    "pydantic",
+    "httpx",
+    "beautifulsoup4",
+    "fastapi",
+    "uvicorn[standard]",
+    "python-multipart",
+    "sse-starlette",
+    "openai",
+    "anthropic",
+    "python-dotenv",
+]

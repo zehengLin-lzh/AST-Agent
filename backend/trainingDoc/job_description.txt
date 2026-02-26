@@ -1,0 +1,29 @@
+About Chubb
+Chubb is the world's largest publicly traded property and casualty insurer, with operations in 54 countries providing commercial and personal insurance, reinsurance, and life insurance to clients worldwide.
+We're at the forefront of AI-driven transformation in insurance. Chubb is making strategic investments in artificial intelligence to fundamentally change how we assess risk, serve customers, and operate our business. Combining cutting-edge AI capabilities with our exceptional financial strength, comprehensive product portfolio, and global reach, we're building the future of intelligent insurance solutions.
+The Role
+As a Senior AI Engineer, you'll work with a global team of engineering and product teams to implement state-of-the-art AI-enabled digital solutions transforming P&C insurance globally. This position spans three core disciplines: applied AI/ML, production AI/LLM systems engineering, and agentic AI systems offering the opportunity to work across the full AI product lifecycle from model development to production deployment.
+Major Responsibilities
+Work closely with AI engineers and product teams to design, build, and deploy ML/AI solutions solving complex business challenges in cloud environments (CPU & GPU)
+Research & implement state-of-the-art LLM techniques including post-training (e.g., SFT, GRPO, RLHF), prompt engineering, and evaluation frameworks
+Build production AI services including middleware, prompt management layers, inference pipelines, LLM-Ops tooling, and async messaging systems (e.g., Kafka) for model integration into applications
+Design and develop agentic AI systems end-to-end from orchestration frameworks (LangChain, CrewAI, AutoGen) to memory/data layers, tool integrations, and multi-agent workflows
+Implement observability, monitoring, and evaluation for production AI systems including prompt tracing, agent behavior analysis, and performance metrics
+Build reusable pipelines, processes, and tools to streamline AI/ML workflows from development to production
+Ensure high-quality, maintainable code that meets business objectives, quality standards, and development guidelines
+Manage stakeholder expectations and communications while adapting to shifting priorities
+Qualifications
+Must Have:
+5+ years' experience in Machine Learning/AI Engineering/Software Engineering/Data Science with deep expertise in production Python development
+Strong knowledge of ML frameworks and libraries (Transformers, trl, PyTorch, LangChain, LlamaIndex, or similar)
+Experience building distributed, high-throughput, low-latency systems
+Experience with containerization and orchestration technologies (Kubernetes, Docker)
+Strong Preference Given To:
+Experience with the full LLM lifecycle: dataset curation, pos-training, evaluation, data labelling and management, and deployment
+Production AI systems experience: building APIs, middleware, prompt management, inference optimization, or LLM-Ops infrastructure
+Agentic AI development: building autonomous agents, multi-agent systems, memory/state management, tool use, or agent evaluation frameworks
+Experience with observability/monitoring tools for AI systems (LangSmith, Weights & Biases, custom tracing solutions)
+Understanding of system architecture design and technical feasibility tradeoffs
+Full-stack development experience integrating AI into user-facing applications
+P&C insurance domain knowledge
+At Chubb we are committed to providing equal employment opportunities to all employees and applicants. It is our policy to provide equal employment opportunities to employees and applicants based on job-related qualifications and ability to perform a job. If you require an accommodation during the hiring process or upon hire, please inform Human Resources. If a selected applicant requests accommodation during the recruitment process, Chubb will consult with the applicant in order to provide suitable accommodation that takes into account the applicant’s accessibility needs.
