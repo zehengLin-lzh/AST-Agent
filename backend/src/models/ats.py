@@ -6,14 +6,17 @@ Used as validation targets for the LLM-generated ATS analysis in
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class KeywordChange(BaseModel):
     """A single 'From → To' keyword replacement recommendation."""
 
     original: str = Field(description="Current keyword/phrase in the resume")
-    recommended: str = Field(description="Recommended replacement keyword/phrase")
+    recommended: str = Field(
+        default="",
+        description="Recommended replacement keyword/phrase",
+    )
     context: str = Field(
         default="",
         description="The sentence or bullet point where this change applies",
@@ -21,6 +24,14 @@ class KeywordChange(BaseModel):
     reason: str = Field(
         default="",
         description="Brief explanation of why this change improves ATS matching",
+    )
+    impact: str = Field(
+        default="medium",
+        description="Relative impact on ATS score: high, medium, or low",
+    )
+    difficulty: str = Field(
+        default="easy",
+        description="Effort to implement: easy (synonym swap), medium (minor rewrite), hard (skill gap or new section needed)",
     )
 
 
@@ -88,3 +99,11 @@ class ATSScoreReport(BaseModel):
         default_factory=list,
         description="Notable gaps between the resume and JD requirements",
     )
+
+    @model_validator(mode="after")
+    def filter_incomplete_keyword_changes(self) -> "ATSScoreReport":
+        """Drop any keyword_changes where the LLM omitted the recommended field."""
+        self.keyword_changes = [
+            kc for kc in self.keyword_changes if kc.recommended.strip()
+        ]
+        return self

@@ -8,7 +8,7 @@ import logging
 import re
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from src.llm.client import LLMClient
 from src.models.ats import ATSScoreReport
@@ -108,7 +108,14 @@ async def rescore_optimized(req: RescoreRequest):
         ATS_SYSTEM_PROMPT,
     )
 
-    report = ATSScoreReport.model_validate(data)
+    try:
+        report = ATSScoreReport.model_validate(data)
+    except ValidationError as exc:
+        log.warning("Rescore validation failed: %s", exc)
+        raise HTTPException(
+            422,
+            "The LLM returned a malformed report. Try again or switch to a different model.",
+        ) from exc
     log.info("Rescore: %.0f/100", report.overall_score)
 
     learning: list[LearningSuggestion] = []

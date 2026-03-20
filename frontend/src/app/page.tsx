@@ -58,7 +58,14 @@ export default function Home() {
       const info = await uploadResume(file);
       setUploadInfo(info);
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Upload failed");
+      const msg = err instanceof Error ? err.message : "Upload failed";
+      const hint =
+        msg === "Failed to fetch" || msg.includes("NetworkError")
+          ? " Cannot reach the API. Is the backend running at " +
+            (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") +
+            "?"
+          : "";
+      alert(msg + hint);
     } finally {
       setIsUploading(false);
     }
@@ -139,14 +146,23 @@ export default function Home() {
     }
   }, [uploadInfo, report, isGenerating, previewPdfUrl, structuredResume, jdText, llmSelection]);
 
-  const handleDownload = useCallback(() => {
+  const handleDownload = useCallback(async () => {
     if (!previewPdfUrl) return;
-    const a = document.createElement("a");
-    a.href = previewPdfUrl;
-    a.download = "optimized_resume.pdf";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    try {
+      const res = await fetch(previewPdfUrl);
+      if (!res.ok) throw new Error("Download failed");
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = "optimized_resume.pdf";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(objectUrl);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Download failed");
+    }
   }, [previewPdfUrl]);
 
   const fileUrl = uploadInfo ? getFileUrl(uploadInfo.file_id) : null;

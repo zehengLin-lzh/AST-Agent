@@ -1,4 +1,10 @@
-"""ATS scoring endpoint with Server-Sent Events for progress streaming."""
+"""ATS scoring endpoint with Server-Sent Events for progress streaming.
+
+Performance optimisations vs the original:
+ - JD resolution and resume parsing run concurrently (asyncio.gather).
+ - A single unified LLM call produces both the structured resume and the
+   ATS report, eliminating one full round-trip.
+"""
 
 from __future__ import annotations
 
@@ -8,15 +14,21 @@ import logging
 import time
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sse_starlette.sse import EventSourceResponse
 
 from api.routes.upload import get_file_path
 from src.llm.client import LLMClient
 from src.models.ats import ATSScoreReport
+from src.models.resume import StructuredResume
 from src.parsers.factory import ResumeParser
 from src.scorer.jd_fetcher import fetch_jd_from_url
-from src.scorer.prompts import ATS_SYSTEM_PROMPT, ATS_USER_PROMPT_TEMPLATE
+from src.scorer.prompts import (
+    ATS_SYSTEM_PROMPT,
+    ATS_USER_PROMPT_TEMPLATE,
+    UNIFIED_SYSTEM_PROMPT,
+    UNIFIED_USER_PROMPT_TEMPLATE,
+)
 from src.structurer.resume_structurer import ResumeStructurer
 
 log = logging.getLogger(__name__)
@@ -42,7 +54,7 @@ async def score_resume(req: ScoreRequest):
 
     async def event_generator():
         try:
-            # Step 0: Create LLM client with selected provider/model
+            # ── Step 0: Create LLM client ─────────────────────────────────
             llm_kwargs: dict = {}
             if req.provider:
                 llm_kwargs["provider"] = req.provider
@@ -57,73 +69,104 @@ async def score_resume(req: ScoreRequest):
 
             provider_label = f"{llm.provider_name} / {llm.model}"
             yield _sse("progress", step="init",
-                        message=f"Using {provider_label}")
+                       message=f"Using {provider_label}")
 
-            # Step 1: Resolve JD
-            yield _sse("progress", step="resolving_jd", message="Resolving job description...")
-
-            if req.jd_url:
-                jd_text = await asyncio.to_thread(fetch_jd_from_url, req.jd_url)
-            else:
-                jd_text = req.jd_text
-
-            yield _sse("progress", step="resolving_jd_done", message="Job description ready")
-
-            # Step 2: Parse resume
-            yield _sse("progress", step="parsing", message="Extracting text from resume...")
+            # ── Step 1: Resolve JD + parse resume concurrently ────────────
+            yield _sse("progress", step="parsing",
+                       message="Extracting resume text and job description...")
 
             t0 = time.perf_counter()
-            raw_sections = await asyncio.to_thread(
-                lambda: ResumeParser(str(file_path)).parse()
-            )
-            parse_time = time.perf_counter() - t0
 
+            if req.jd_url:
+                raw_sections, jd_text = await asyncio.gather(
+                    asyncio.to_thread(lambda: ResumeParser(str(file_path)).parse()),
+                    asyncio.to_thread(fetch_jd_from_url, req.jd_url),
+                )
+            else:
+                jd_text = req.jd_text
+                raw_sections = await asyncio.to_thread(
+                    lambda: ResumeParser(str(file_path)).parse()
+                )
+
+            prep_time = time.perf_counter() - t0
             yield _sse("progress", step="parsing_done",
-                        message=f"Extracted {len(raw_sections)} sections in {parse_time:.1f}s")
+                       message=f"Ready in {prep_time:.1f}s — {len(raw_sections)} sections extracted")
 
-            # Step 3: Structure with LLM
-            yield _sse("progress", step="structuring",
-                        message=f"Structuring resume with {provider_label}...")
+            resume_text = ResumeStructurer._sections_to_text(raw_sections)
 
-            structurer = ResumeStructurer(llm=llm)
+            # ── Step 2: Single unified LLM call ───────────────────────────
+            yield _sse("progress", step="analyzing",
+                       message=f"Running analysis with {provider_label}...")
+
             t1 = time.perf_counter()
-            structured_resume = await asyncio.to_thread(structurer.structure, str(file_path))
-            structure_time = time.perf_counter() - t1
-
-            yield _sse("progress", step="structuring_done",
-                        message=f"Resume structured in {structure_time:.1f}s")
-
-            resume_json = structured_resume.model_dump_json(indent=2)
-
-            # Step 4: ATS scoring
-            yield _sse("progress", step="scoring",
-                        message=f"Running ATS analysis with {provider_label}...")
-
-            t2 = time.perf_counter()
             data = await asyncio.to_thread(
                 llm.generate_json,
-                ATS_USER_PROMPT_TEMPLATE.format(
-                    resume_json=resume_json,
+                UNIFIED_USER_PROMPT_TEMPLATE.format(
+                    resume_text=resume_text,
                     job_description=jd_text,
                 ),
-                ATS_SYSTEM_PROMPT,
+                UNIFIED_SYSTEM_PROMPT,
             )
-            score_time = time.perf_counter() - t2
+            llm_time = time.perf_counter() - t1
 
-            yield _sse("progress", step="scoring_done",
-                        message=f"ATS analysis completed in {score_time:.1f}s")
+            yield _sse("progress", step="analyzing_done",
+                       message=f"Analysis completed in {llm_time:.1f}s")
 
-            # Step 5: Validate and return
+            # ── Step 3: Validate — resilient extraction + 2-call fallback ──
             yield _sse("progress", step="validating", message="Validating results...")
 
-            report = ATSScoreReport.model_validate(data)
+            resume_dict, ats_dict = _extract_unified_parts(data)
+
+            try:
+                structured_resume = StructuredResume.model_validate(resume_dict)
+                report = ATSScoreReport.model_validate(ats_dict)
+            except (ValidationError, Exception) as _unified_exc:
+                # Unified parsing failed (common with smaller local models).
+                # Fall back to the original two-call approach silently.
+                log.warning(
+                    "Unified response malformed (keys=%s): %s — falling back",
+                    list(data.keys()), _unified_exc,
+                )
+                yield _sse(
+                    "progress",
+                    step="adapting",
+                    message="Adapting for this model — running in compatibility mode...",
+                )
+
+                from src.structurer.prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
+
+                t_fb = time.perf_counter()
+
+                # Call 1: structure the resume from raw text
+                fallback_resume_data = await asyncio.to_thread(
+                    llm.generate_json,
+                    USER_PROMPT_TEMPLATE.format(resume_text=resume_text),
+                    SYSTEM_PROMPT,
+                )
+                structured_resume = StructuredResume.model_validate(fallback_resume_data)
+
+                # Call 2: ATS score using the structured resume
+                fallback_ats_data = await asyncio.to_thread(
+                    llm.generate_json,
+                    ATS_USER_PROMPT_TEMPLATE.format(
+                        resume_json=structured_resume.model_dump_json(indent=2),
+                        job_description=jd_text,
+                    ),
+                    ATS_SYSTEM_PROMPT,
+                )
+                report = ATSScoreReport.model_validate(fallback_ats_data)
+
+                log.info("Fallback 2-call completed in %.1fs", time.perf_counter() - t_fb)
 
             result = {
                 "report": json.loads(report.model_dump_json()),
-                "structured_resume": json.loads(resume_json),
+                "structured_resume": json.loads(structured_resume.model_dump_json()),
             }
             yield _sse("complete", **result)
 
+        except ValidationError as exc:
+            log.warning("ATS report validation failed: %s", exc)
+            yield _sse("error", message="The LLM returned a malformed report. Try again or switch to a different model.")
         except ValueError as exc:
             yield _sse("error", message=str(exc))
         except ConnectionError as exc:
@@ -139,3 +182,49 @@ async def score_resume(req: ScoreRequest):
 
 def _sse(event: str, **data) -> dict:
     return {"event": event, "data": json.dumps(data)}
+
+
+def _extract_unified_parts(data: dict) -> tuple[dict, dict]:
+    """Extract structured_resume and ats_report dicts from a raw unified LLM response.
+
+    Local models frequently deviate from the requested envelope.  Three
+    strategies are tried in order before giving up and returning empty dicts
+    (which will trigger the 2-call fallback in the caller).
+
+    Returns:
+        ``(resume_dict, ats_dict)`` — either may be ``{}`` if unrecoverable.
+    """
+    # Strategy 1: well-formed response — the happy path
+    resume_dict: dict = (
+        data.get("structured_resume")
+        or data.get("resume")
+        or data.get("structured")
+        or {}
+    )
+    ats_dict: dict = (
+        data.get("ats_report")
+        or data.get("ats")
+        or data.get("report")
+        or data.get("analysis")
+        or data.get("ats_score_report")
+        or data.get("resume_analysis")
+        or {}
+    )
+
+    # Strategy 2: flat response — model mixed both parts at the top level.
+    # Heuristic: overall_score at root → the whole dict IS the ats_report.
+    #            contactInfo at root  → the whole dict IS the structured_resume.
+    if not ats_dict and "overall_score" in data:
+        ats_dict = data
+    if not resume_dict and "contactInfo" in data:
+        resume_dict = data
+
+    # Strategy 3: reversed nesting — model put structured_resume inside ats_report.
+    if isinstance(ats_dict, dict) and not resume_dict:
+        nested = ats_dict.get("structured_resume") or ats_dict.get("resume") or {}
+        if nested:
+            resume_dict = nested
+            ats_dict = {k: v for k, v in ats_dict.items()
+                        if k not in ("structured_resume", "resume")}
+
+    return resume_dict, ats_dict

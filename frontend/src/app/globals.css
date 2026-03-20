@@ -12,6 +12,8 @@
   --surface-hover: #f1f5f9;
   --border: #e2e8f0;
   --muted: #64748b;
+  --font-geist-sans: "Geist Sans", ui-sans-serif, sans-serif;
+  --font-geist-mono: "Geist Mono", ui-monospace, monospace;
 }
 
 @theme inline {

@@ -10,6 +10,8 @@ export interface KeywordChange {
   recommended: string;
   context: string;
   reason: string;
+  impact: "high" | "medium" | "low";
+  difficulty: "easy" | "medium" | "hard";
 }
 
 export interface JDKeyword {
