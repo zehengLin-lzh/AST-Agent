@@ -17,17 +17,41 @@ from src.constants import (
     MAX_HEADER_WORDS,
 )
 from src.models.text_line import TextLine
+from src.observability import get_logger
 from src.parsers.base import BaseResumeParser
+
+log = get_logger(__name__)
+
+# Exceptions raised by PyMuPDF that indicate a recoverable per-document or
+# per-page failure (corrupt data, encrypted stream, unsupported encoding).
+# RuntimeError covers PyMuPDF's generic MuPDF errors; ValueError covers bad
+# input arguments; OSError covers I/O failures mid-document.
+_PDF_RECOVERABLE_ERRORS = (RuntimeError, ValueError, OSError)
 
 
 class PDFResumeParser(BaseResumeParser):
     """Parse a **PDF** resume into ``[{section, content}, …]``."""
 
     def parse(self) -> list[dict[str, str]]:
-        # Improvement 1: handle corrupt / unreadable PDFs at open time
+        # Improvement 1: handle corrupt / unreadable PDFs at open time.
+        # NOTE: PyMuPDF defines its own ``pymupdf.FileNotFoundError`` /
+        # ``pymupdf.FileDataError`` that subclass ``RuntimeError`` — NOT
+        # Python's builtin OSError tree — so a plain ``except FileNotFoundError``
+        # will silently miss them.  The recoverable tuple covers both.
+        if not self.file_path.exists():
+            log.warning("pdf.file_missing", extra={"path": str(self.file_path)})
+            return [{
+                "section": "Error",
+                "content": "The PDF file was not found on disk.",
+            }]
         try:
             doc = fitz.open(str(self.file_path))
-        except Exception as exc:
+        except _PDF_RECOVERABLE_ERRORS as exc:
+            log.warning(
+                "pdf.open_failed",
+                extra={"path": str(self.file_path), "error": str(exc),
+                       "exc_type": type(exc).__name__},
+            )
             return [{
                 "section": "Error",
                 "content": (
@@ -174,7 +198,11 @@ class PDFResumeParser(BaseResumeParser):
             try:
                 doc = fitz.open(str(self.file_path))
                 opened_here = True
-            except Exception:
+            except _PDF_RECOVERABLE_ERRORS as exc:
+                log.warning(
+                    "pdf.fallback_open_failed",
+                    extra={"error": str(exc), "exc_type": type(exc).__name__},
+                )
                 return None
 
         try:
@@ -195,7 +223,11 @@ class PDFResumeParser(BaseResumeParser):
                 for line in plain_lines
             ]
             return self._collect_sections(entries)
-        except Exception:
+        except _PDF_RECOVERABLE_ERRORS as exc:
+            log.warning(
+                "pdf.fallback_extract_failed",
+                extra={"error": str(exc), "exc_type": type(exc).__name__},
+            )
             return None
         finally:
             if opened_here:

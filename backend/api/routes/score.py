@@ -10,17 +10,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import time
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ValidationError
 from sse_starlette.sse import EventSourceResponse
 
+from api.routes.rescore import _build_llm
 from api.routes.upload import get_file_path
-from src.llm.client import LLMClient
 from src.models.ats import ATSScoreReport
 from src.models.resume import StructuredResume
+from src.observability import bind_context, get_logger, log_event
 from src.parsers.factory import ResumeParser
 from src.scorer.jd_fetcher import fetch_jd_from_url
 from src.scorer.prompts import (
@@ -31,7 +31,7 @@ from src.scorer.prompts import (
 )
 from src.structurer.resume_structurer import ResumeStructurer
 
-log = logging.getLogger(__name__)
+log = get_logger("api.score")
 router = APIRouter()
 
 
@@ -55,17 +55,21 @@ async def score_resume(req: ScoreRequest):
     async def event_generator():
         try:
             # ── Step 0: Create LLM client ─────────────────────────────────
-            llm_kwargs: dict = {}
-            if req.provider:
-                llm_kwargs["provider"] = req.provider
-            if req.model:
-                llm_kwargs["model"] = req.model
-
             try:
-                llm = LLMClient(**llm_kwargs)
+                llm = _build_llm(req.provider, req.model)
             except ValueError as exc:
+                log_event(log, "score.llm_init_failed", level=30,
+                          error=str(exc), provider=req.provider, model=req.model)
                 yield _sse("error", message=str(exc))
                 return
+
+            bind_context(
+                provider=llm.provider_name,
+                model=llm.model,
+                file_id=req.file_id,
+                route="score",
+            )
+            log_event(log, "score.start", jd_source="url" if req.jd_url else "text")
 
             provider_label = f"{llm.provider_name} / {llm.model}"
             yield _sse("progress", step="init",
@@ -89,6 +93,11 @@ async def score_resume(req: ScoreRequest):
                 )
 
             prep_time = time.perf_counter() - t0
+            log_event(
+                log, "score.parse_done",
+                duration_ms=round(prep_time * 1000, 2),
+                section_count=len(raw_sections),
+            )
             yield _sse("progress", step="parsing_done",
                        message=f"Ready in {prep_time:.1f}s — {len(raw_sections)} sections extracted")
 
@@ -108,6 +117,10 @@ async def score_resume(req: ScoreRequest):
                 UNIFIED_SYSTEM_PROMPT,
             )
             llm_time = time.perf_counter() - t1
+            log_event(
+                log, "score.llm_unified_done",
+                duration_ms=round(llm_time * 1000, 2),
+            )
 
             yield _sse("progress", step="analyzing_done",
                        message=f"Analysis completed in {llm_time:.1f}s")
@@ -120,12 +133,14 @@ async def score_resume(req: ScoreRequest):
             try:
                 structured_resume = StructuredResume.model_validate(resume_dict)
                 report = ATSScoreReport.model_validate(ats_dict)
-            except (ValidationError, Exception) as _unified_exc:
+            except ValidationError as unified_exc:
                 # Unified parsing failed (common with smaller local models).
                 # Fall back to the original two-call approach silently.
-                log.warning(
-                    "Unified response malformed (keys=%s): %s — falling back",
-                    list(data.keys()), _unified_exc,
+                log_event(
+                    log, "score.unified_invalid",
+                    level=30,  # WARNING
+                    response_keys=list(data.keys()),
+                    error_count=len(unified_exc.errors()),
                 )
                 yield _sse(
                     "progress",
@@ -156,25 +171,32 @@ async def score_resume(req: ScoreRequest):
                 )
                 report = ATSScoreReport.model_validate(fallback_ats_data)
 
-                log.info("Fallback 2-call completed in %.1fs", time.perf_counter() - t_fb)
+                log_event(
+                    log, "score.fallback_done",
+                    duration_ms=round((time.perf_counter() - t_fb) * 1000, 2),
+                )
 
             result = {
                 "report": json.loads(report.model_dump_json()),
                 "structured_resume": json.loads(structured_resume.model_dump_json()),
             }
+            log_event(log, "score.complete", overall_score=round(report.overall_score, 1))
             yield _sse("complete", **result)
 
         except ValidationError as exc:
-            log.warning("ATS report validation failed: %s", exc)
+            log_event(log, "score.validation_failed", level=30, errors=exc.errors()[:5])
             yield _sse("error", message="The LLM returned a malformed report. Try again or switch to a different model.")
         except ValueError as exc:
+            log_event(log, "score.value_error", level=30, error=str(exc))
             yield _sse("error", message=str(exc))
         except ConnectionError as exc:
+            log_event(log, "score.connection_error", level=30, error=str(exc))
             yield _sse("error", message=f"Connection error: {exc}")
         except RuntimeError as exc:
+            log_event(log, "score.runtime_error", level=30, error=str(exc))
             yield _sse("error", message=f"Runtime error: {exc}")
         except Exception as exc:
-            log.exception("Unexpected error during scoring")
+            log.exception("score.unexpected_error")
             yield _sse("error", message=f"Unexpected error: {exc}")
 
     return EventSourceResponse(event_generator())

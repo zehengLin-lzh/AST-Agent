@@ -10,12 +10,30 @@ from fastapi import APIRouter, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from api.config import UPLOAD_DIR
+from src.observability import bind_context, get_logger, log_event
 
+log = get_logger("api.upload")
 router = APIRouter()
 
 ALLOWED_EXTENSIONS = {".pdf", ".docx"}
 
 _file_registry: dict[str, dict] = {}
+
+
+def _probe_pdf_page_count(path: Path) -> int:
+    """Return the page count, or 0 if the file cannot be opened."""
+    try:
+        doc = fitz.open(str(path))
+    except (RuntimeError, ValueError, OSError, FileNotFoundError) as exc:
+        log_event(
+            log, "upload.pdf_probe_failed",
+            path=str(path), error=str(exc), exc_type=type(exc).__name__,
+        )
+        return 0
+    try:
+        return len(doc)
+    finally:
+        doc.close()
 
 
 @router.post("/upload")
@@ -32,14 +50,7 @@ async def upload_resume(file: UploadFile):
     contents = await file.read()
     dest.write_bytes(contents)
 
-    page_count = 0
-    if suffix == ".pdf":
-        try:
-            doc = fitz.open(str(dest))
-            page_count = len(doc)
-            doc.close()
-        except Exception:
-            page_count = 1
+    page_count = _probe_pdf_page_count(dest) if suffix == ".pdf" else 0
 
     _file_registry[file_id] = {
         "filename": file.filename,
@@ -47,6 +58,13 @@ async def upload_resume(file: UploadFile):
         "path": str(dest),
         "page_count": page_count,
     }
+
+    bind_context(file_id=file_id)
+    log_event(
+        log, "upload.success",
+        file_id=file_id, suffix=suffix, size_bytes=len(contents),
+        page_count=page_count,
+    )
 
     return {
         "file_id": file_id,
