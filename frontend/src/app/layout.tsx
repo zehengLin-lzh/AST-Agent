@@ -12,6 +12,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
+    // next/font/google would be the canonical fix for the
+    // @next/next/no-page-custom-font warning but pulls fonts at build time,
+    // which breaks offline / airgapped builds.  A static <link> keeps builds
+    // hermetic at the cost of one info-level lint warning.
     <html lang="en">
       <head>
         <link

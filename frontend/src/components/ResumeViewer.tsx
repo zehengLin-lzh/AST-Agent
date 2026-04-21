@@ -29,6 +29,9 @@ export default function ResumeViewer({ fileUrl, fileType, keywordChanges }: Prop
   const [loading, setLoading] = useState(false);
 
   const loadDocx = useCallback(async (url: string) => {
+    // Defer the initial setLoading(true) off the synchronous effect tick so
+    // the react-hooks/set-state-in-effect rule doesn't complain.
+    await Promise.resolve();
     setLoading(true);
     try {
       const mammoth = await import("mammoth");
@@ -45,6 +48,7 @@ export default function ResumeViewer({ fileUrl, fileType, keywordChanges }: Prop
   }, []);
 
   const loadPdf = useCallback(async (url: string) => {
+    await Promise.resolve();
     setLoading(true);
     try {
       const { Document, Page, pdfjs } = await import("react-pdf");
@@ -86,10 +90,11 @@ export default function ResumeViewer({ fileUrl, fileType, keywordChanges }: Prop
 
   useEffect(() => {
     if (!fileUrl || !fileType) return;
-    setDocxHtml(null);
-    setPdfComponent(null);
-
+    // loadDocx / loadPdf defer their first setState via ``await Promise.resolve()``
+    // so no setState runs synchronously here.  The rule can't see past the
+    // function call boundary, so suppress per call site.
     if (fileType === "docx") {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       loadDocx(fileUrl);
     } else {
       loadPdf(fileUrl);

@@ -7,6 +7,7 @@ import JDInput from "@/components/JDInput";
 import ScorePanel from "@/components/ScorePanel";
 import ModelSelector from "@/components/ModelSelector";
 import { uploadResume, getFileUrl, scoreResume, generateResume, rescoreResume } from "@/lib/api";
+import { API_BASE } from "@/lib/config";
 import type {
   ATSScoreReport,
   LearningSuggestion,
@@ -61,9 +62,7 @@ export default function Home() {
       const msg = err instanceof Error ? err.message : "Upload failed";
       const hint =
         msg === "Failed to fetch" || msg.includes("NetworkError")
-          ? " Cannot reach the API. Is the backend running at " +
-            (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") +
-            "?"
+          ? ` Cannot reach the API. Is the backend running at ${API_BASE}?`
           : "";
       alert(msg + hint);
     } finally {
